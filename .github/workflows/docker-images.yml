@@ -67,22 +67,49 @@ jobs:
           MORPHIT_REF: ${{ inputs.morphit_ref }}
         run: |
           set -euo pipefail
-          # Keep source-fetch dependencies out of the lightweight runner image.
-          # A disposable Debian container writes morphit-src/ into the checkout.
-          docker run --rm \
-            -e MORPHIT_REF \
-            -v "$PWD:/workspace" \
-            -w /workspace \
+
+          # The self-hosted Actions runner itself runs inside Docker while using
+          # the host Docker socket. A normal `-v "$PWD:/workspace"` therefore
+          # points the host daemon at a path that only exists inside the runner
+          # container. Use docker cp instead so this also works with Dockerized
+          # self-hosted runners and named runner work volumes.
+          FETCH_CONTAINER="morphit-fetch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.component }}"
+
+          cleanup_fetch_container() {
+            docker rm -f "$FETCH_CONTAINER" >/dev/null 2>&1 || true
+          }
+          trap cleanup_fetch_container EXIT
+          cleanup_fetch_container
+
+          docker create \
+            --name "$FETCH_CONTAINER" \
+            -e MORPHIT_REF="$MORPHIT_REF" \
             debian:bookworm-slim \
             bash -lc '
               set -euo pipefail
               apt-get update >/dev/null
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
                 ca-certificates curl git python3 tar unzip >/dev/null
-              ./scripts/fetch-morphit.sh
-            '
+              bash /tmp/fetch-morphit.sh
+            ' >/dev/null
+
+          docker cp scripts/fetch-morphit.sh "$FETCH_CONTAINER:/tmp/fetch-morphit.sh"
+          docker start -a "$FETCH_CONTAINER"
+
+          rm -rf morphit-src
+          mkdir -p morphit-src
+          docker cp "$FETCH_CONTAINER:/morphit-src/." morphit-src/
+
           test -f morphit-src/package.json
           test -f morphit-src/package-lock.json
+          test -d morphit-src/apps/indexer
+          test -d morphit-src/apps/relay
+          test -d morphit-src/apps/web
+
+          echo "Morphit source copied back into the Actions checkout."
+          if [ -f morphit-src/.deployment-source-info ]; then
+            cat morphit-src/.deployment-source-info
+          fi
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
