@@ -1,0 +1,139 @@
+name: Build Morphit Multi-Arch Images
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - "docker/**"
+      - "scripts/fetch-morphit.sh"
+      - ".github/workflows/docker-images.yml"
+      - "docker-compose.yml"
+      - ".dockerignore"
+  workflow_dispatch:
+    inputs:
+      morphit_ref:
+        description: "Upstream Morphit tag/branch to build (blank = latest release/main fallback)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: morphit-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.component }} AMD64 + ARM64
+    runs-on:
+      - self-hosted
+      - Linux
+      - docker
+      - buildx
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - component: node
+            dockerfile: docker/Dockerfile.node
+          - component: web
+            dockerfile: docker/Dockerfile.web
+
+    steps:
+      - name: Checkout deployment repository
+        uses: actions/checkout@v4
+
+      - name: Show self-hosted runner information
+        shell: bash
+        run: |
+          echo "Runner: $RUNNER_NAME"
+          echo "OS:     $RUNNER_OS"
+          echo "Arch:   $RUNNER_ARCH"
+          uname -a
+          docker version
+          docker buildx version
+
+      - name: Fetch Morphit source
+        shell: bash
+        env:
+          MORPHIT_REF: ${{ inputs.morphit_ref }}
+        run: |
+          set -euo pipefail
+          # Keep source-fetch dependencies out of the lightweight runner image.
+          # A disposable Debian container writes morphit-src/ into the checkout.
+          docker run --rm \
+            -e MORPHIT_REF \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            debian:bookworm-slim \
+            bash -lc '
+              set -euo pipefail
+              apt-get update >/dev/null
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates curl git python3 tar unzip >/dev/null
+              ./scripts/fetch-morphit.sh
+            '
+          test -f morphit-src/package.json
+          test -f morphit-src/package-lock.json
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU for AMD64 and ARM64
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: amd64,arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set lowercase image name
+        id: image
+        shell: bash
+        run: |
+          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${OWNER}/morphit-${{ matrix.component }}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push ${{ matrix.component }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+
+      - name: Show published image
+        shell: bash
+        run: |
+          echo "Published: ${{ steps.image.outputs.name }}"
+          echo "Platforms: linux/amd64, linux/arm64"
