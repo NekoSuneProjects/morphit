@@ -1,0 +1,26 @@
+# Git / CI
+.git
+.github
+
+# Local configuration and secrets must never enter the Docker build context
+.env
+.env.*
+!.env.example
+secrets/
+backups/
+
+# Runtime data / temporary files
+*.log
+*.tmp
+*.pid
+node_modules/
+**/node_modules/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# The fetched Morphit source is intentionally INCLUDED:
+# morphit-src/
