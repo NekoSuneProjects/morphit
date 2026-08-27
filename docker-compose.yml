@@ -29,7 +29,8 @@ services:
     logging: *default-logging
 
   indexer:
-    image: local/morphit-node:pi-arm64
+    image: ${MORPHIT_NODE_IMAGE:-ghcr.io/nekosuneprojects/morphit-node:latest}
+    pull_policy: missing
     build:
       context: .
       dockerfile: docker/Dockerfile.node
@@ -67,7 +68,8 @@ services:
     logging: *default-logging
 
   relay:
-    image: local/morphit-node:pi-arm64
+    image: ${MORPHIT_NODE_IMAGE:-ghcr.io/nekosuneprojects/morphit-node:latest}
+    pull_policy: missing
     build:
       context: .
       dockerfile: docker/Dockerfile.node
@@ -119,7 +121,8 @@ services:
     logging: *default-logging
 
   web:
-    image: local/morphit-web:pi-arm64
+    image: ${MORPHIT_WEB_IMAGE:-ghcr.io/nekosuneprojects/morphit-web:latest}
+    pull_policy: missing
     build:
       context: .
       dockerfile: docker/Dockerfile.web
