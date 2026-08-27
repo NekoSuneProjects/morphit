@@ -1,0 +1,9 @@
+.env
+secrets/*
+!secrets/.gitkeep
+!secrets/README.md
+backups/*
+!backups/.gitkeep
+morphit-src/*
+!morphit-src/.gitkeep
+*.log

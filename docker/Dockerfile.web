@@ -1,0 +1,25 @@
+FROM node:22-bookworm-slim AS builder
+WORKDIR /src
+COPY morphit-src/ /src/
+
+# Prefer canonical shipped frontend bytes if the Morphit release package contains
+# apps/web/build/.shipped. Source-only checkouts do not normally contain those
+# bytes, so the fallback uses Morphit's explicit local-test build path. That works
+# but is not byte-identical to an upstream canonical shipped build.
+RUN set -eux; \
+    if [ -f /src/apps/web/build/.shipped ]; then \
+      echo "Using canonical shipped Morphit web build"; \
+      cp -a /src/apps/web/build /web-build; \
+      printf '%s\n' canonical-shipped > /web-build/.deployment-build-source; \
+    else \
+      echo "WARNING: canonical shipped web bytes were not found; building locally"; \
+      npm ci; \
+      npm run build:local-test -w apps/web; \
+      cp -a /src/apps/web/build /web-build; \
+      printf '%s\n' local-test-rebuild > /web-build/.deployment-build-source; \
+    fi
+
+FROM nginx:alpine
+COPY docker/nginx.conf /etc/nginx/nginx.conf
+COPY --from=builder /web-build/ /var/www/morphit/
+EXPOSE 8080

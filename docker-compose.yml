@@ -1,0 +1,171 @@
+name: morphit-pi
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: morphit_indexer
+      POSTGRES_PASSWORD: ${MORPHIT_DB_PASSWORD:?Run ./configure.sh first}
+      POSTGRES_DB: morphit_indexer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres-hardening.sql:/docker-entrypoint-initdb.d/99-hardening.sql:ro
+    networks:
+      morphit_net:
+        ipv4_address: 172.31.40.14
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U morphit_indexer -d morphit_indexer"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: *default-logging
+
+  indexer:
+    image: local/morphit-node:pi-arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      MORPHIT_INDEXER_DATABASE_URL: postgresql://morphit_indexer:${MORPHIT_DB_PASSWORD}@postgres:5432/morphit_indexer
+      MORPHIT_INDEXER_OPERATOR_ACCOUNT: ${MORPHIT_OPERATOR_ACCOUNT}
+      MORPHIT_INDEXER_ALLOWED_ORIGINS: https://${MORPHIT_HOSTNAME}
+      MORPHIT_INDEXER_PUBLIC_ORIGIN: https://${MORPHIT_HOSTNAME}
+      MORPHIT_INDEXER_FEE_RECIPIENT: ${MORPHIT_FEE_RECIPIENT}
+      MORPHIT_INDEXER_OPERATOR_POLICY_VERIFY_URL: https://${MORPHIT_HOSTNAME}/verify.json
+      MORPHIT_INDEXER_HOST: 0.0.0.0
+      MORPHIT_INDEXER_PORT: "8081"
+      MORPHIT_INDEXER_CHAIN_RPC: ${MORPHIT_CHAIN_RPC:-https://rpc.blurt.world}
+      MORPHIT_INDEXER_TESTNET: ${MORPHIT_TESTNET:-0}
+      MORPHIT_INDEXER_LOG_LEVEL: ${MORPHIT_LOG_LEVEL:-info}
+      MORPHIT_INDEXER_INSTANCE_METADATA: ${MORPHIT_INSTANCE_METADATA:-none}
+    entrypoint: ["/usr/local/bin/indexer-entrypoint"]
+    expose:
+      - "8081"
+    networks:
+      morphit_net:
+        ipv4_address: 172.31.40.13
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/v1/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    logging: *default-logging
+
+  relay:
+    image: local/morphit-node:pi-arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      MORPHIT_RELAY_HOST: 0.0.0.0
+      MORPHIT_RELAY_PORT: "8080"
+      MORPHIT_RELAY_ACCOUNT: ${MORPHIT_RELAY_ACCOUNT}
+      MORPHIT_RELAY_ACTIVE_KEY_FILE: /run/morphit/relay-active.key
+      MORPHIT_RELAY_PUBLIC_ORIGIN: https://${MORPHIT_HOSTNAME}
+      MORPHIT_RELAY_CHAIN_RPC: ${MORPHIT_CHAIN_RPC:-https://rpc.blurt.world}
+      MORPHIT_RELAY_TESTNET: ${MORPHIT_TESTNET:-0}
+      MORPHIT_RELAY_LOG_LEVEL: ${MORPHIT_LOG_LEVEL:-info}
+      MORPHIT_RELAY_TRUSTED_PROXY_IPS: 172.31.40.10/32
+      MORPHIT_RELAY_INSTANCE_METADATA: ${MORPHIT_INSTANCE_METADATA:-none}
+      MORPHIT_RELAY_ORIGIN_DISCOVERY: ${MORPHIT_RELAY_ORIGIN_DISCOVERY:-0}
+      MORPHIT_RELAY_ORIGIN_DISCOVERY_FALLBACK: ${MORPHIT_RELAY_ORIGIN_DISCOVERY_FALLBACK:-}
+      MORPHIT_RELAY_ONION_SERVICE: "0"
+      MORPHIT_RELAY_CORS_ORIGINS: https://${MORPHIT_HOSTNAME}
+      MORPHIT_RELAY_RATE_LIMIT_WINDOW_MS: ${MORPHIT_RELAY_RATE_LIMIT_WINDOW_MS:-60000}
+      MORPHIT_RELAY_RATE_LIMIT_POW_TARGET: ${MORPHIT_RELAY_RATE_LIMIT_POW_TARGET:-1000}
+      MORPHIT_RELAY_RATE_LIMIT_UNSIGNED: ${MORPHIT_RELAY_RATE_LIMIT_UNSIGNED:-1000}
+      MORPHIT_RELAY_DATA_DIR: /var/lib/morphit-relay
+      MORPHIT_RELAY_MAX_BODY_BYTES: ${MORPHIT_RELAY_MAX_BODY_BYTES:-32768}
+      MORPHIT_RELAY_POW_DIFFICULTY_BITS: ${MORPHIT_RELAY_POW_DIFFICULTY_BITS:-20}
+      MORPHIT_RELAY_POW_MIN_DIFFICULTY_BITS: ${MORPHIT_RELAY_POW_MIN_DIFFICULTY_BITS:-18}
+      MORPHIT_RELAY_POW_MAX_DIFFICULTY_BITS: ${MORPHIT_RELAY_POW_MAX_DIFFICULTY_BITS:-24}
+      MORPHIT_RELAY_POW_MAX_AGE_SECONDS: ${MORPHIT_RELAY_POW_MAX_AGE_SECONDS:-300}
+      MORPHIT_RELAY_POW_ADJUST_INTERVAL_SECONDS: ${MORPHIT_RELAY_POW_ADJUST_INTERVAL_SECONDS:-60}
+    entrypoint: ["/usr/local/bin/relay-entrypoint"]
+    volumes:
+      - relay_data:/var/lib/morphit-relay
+      - ./secrets/relay-active.key:/run/host-secrets/relay-active.key:ro
+    tmpfs:
+      - /run/morphit:size=1m,mode=0700
+    expose:
+      - "8080"
+    networks:
+      morphit_net:
+        ipv4_address: 172.31.40.12
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const s=require('net').connect(8080,'127.0.0.1');s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),3000)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging: *default-logging
+
+  web:
+    image: local/morphit-web:pi-arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      indexer:
+        condition: service_healthy
+      relay:
+        condition: service_healthy
+    expose:
+      - "8080"
+    networks:
+      morphit_net:
+        ipv4_address: 172.31.40.10
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    logging: *default-logging
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN}"]
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      morphit_net:
+        ipv4_address: 172.31.40.11
+    logging: *default-logging
+
+networks:
+  morphit_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.40.0/24
+
+volumes:
+  postgres_data:
+  relay_data:
